@@ -1,18 +1,36 @@
 import machine
-
 import constants
+import BLE_Device
+import _thread
 from constants import STATE_PAUSED
 from mfrc522 import MFRC522
+
+
+
 READER = MFRC522(spi_id=0, sck=6, miso=4, mosi=7, cs=5, rst=22)
+BLE_DEVICE = None
+CLUTCH_VALUE = 1129975462
+
 
 class Data:
     def __init__(self, id: int, content):
         self.id = id
         self.content = content
+        self.clutch_id = 0
+
+    def __str__(self):
+        return f'{{"id": {self.id}, "content": {self.content}}}'
+
+    def getFormatted(self):
+        status = -1
+        if self.id == constants.SEND_TAG_DATA:
+            status = 1 if self.content == CLUTCH_VALUE else 0
+        return f'({self.clutch_id}, {status})'
 
 
-State = STATE_PAUSED
-PollInterval = 500
+State = constants.STATE_PLAYING
+PollInterval = 200
+
 
 def onSetState(data: Data):
     global State
@@ -22,6 +40,7 @@ def onSetState(data: Data):
 def onSetPollInterval(data: Data):
     global PollInterval
     PollInterval = data.content
+
 
 def readRfid():
     READER.init()
@@ -36,18 +55,26 @@ def readRfid():
     else:
         sendData(Data(constants.SEND_ERROR_DATA, {'id': constants.ERROR_NO_TAG, 'code': stat}))
 
-InputHandlers = {
-    constants.IN_SET_STATE: onSetState,
-    constants.IN_SET_POLL_INTERVAL: onSetPollInterval
-}
 
 def sendData(data: Data):
-    print(data)
+    print(data.getFormatted())
+
 
 def getData() -> list[Data]:
     return []
 
 
+InputHandlers = {
+    constants.IN_SET_STATE: onSetState,
+    constants.IN_SET_POLL_INTERVAL: onSetPollInterval
+}
+
+def run_device():
+    global BLE_DEVICE
+    BLE_DEVICE = BLE_Device.BLEDevice(name="PicoW_Clutch")
+    BLE_DEVICE.run()
+# 
+# _thread.start_new_thread(run_device, ())
 while True:
     for data in getData():
         InputHandlers[data.id](data)
