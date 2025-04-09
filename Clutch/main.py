@@ -1,86 +1,116 @@
-import machine
-import constants
-import BLE_Device
-import _thread
-from constants import STATE_PAUSED
-from mfrc522 import MFRC522
+import bluetooth
+import time
+import RFID
+from machine import Pin
+from micropython import const
+
+# BLE Constants
+_IRQ_CENTRAL_CONNECT = const(1)  # Event for when a central device connects
+_IRQ_CENTRAL_DISCONNECT = const(2)  # Event for when a central device disconnects
+
+_FLAG_READ = const(0x02)  # Flag to indicate that the characteristic can be read
+_FLAG_WRITE = const(0x08)  # Flag to indicate that the characteristic can be written
+_FLAG_NOTIFY = const(0x10)  # Flag to indicate that the characteristic can notify
+
+# Use proper 128-bit UUIDs for BLE compatibility
+SERVICE_UUID = bluetooth.UUID("0000A002-0000-1000-8000-00805F9B34FB")  # UUID for the service
+CHARACTERISTIC_UUID = bluetooth.UUID("0000A003-0000-1000-8000-00805F9B34FB")  # UUID for the characteristic
+
+class BLEDevice:
+    def __init__(self, name="PicoW_Bluetooth"):
+        self.name = name
+        self.connected = False
+        self.conn_handle = None
+        self.ble = bluetooth.BLE()  # Initialize the BLE object
+        self.ble.active(True)  # Activate BLE
+        self.ble.irq(self.ble_irq)  # Set the IRQ handler for BLE events
+        self.ble.config(gap_name=self.name)  # Set the device name for advertising
+        self.pin = Pin("LED", Pin.OUT)  # Initialize the pin for the LED
+
+        # Define GATT service with correct structure
+        self.service = (
+            SERVICE_UUID,
+            ((CHARACTERISTIC_UUID, _FLAG_READ | _FLAG_NOTIFY | _FLAG_WRITE),),
+        )
+
+        # Register the service
+        ((self.characteristic_handle,),) = self.ble.gatts_register_services((self.service,))
+        
+        self.start_advertising()
+  
+    def start_advertising(self, interval=100):
+        """Start advertising BLE service"""
+        print("Starting advertising...")
+        payload = self.create_advertising_payload()
+        self.ble.gap_advertise(interval, payload)
+
+    def create_advertising_payload(self):
+        """Create a proper advertising packet"""
+        payload = bytearray()
+        payload.extend(bytes([len(self.name) + 1, 0x09]))  # Length and type for Complete Local Name
+        payload.extend(self.name.encode('utf-8'))
+        return payload
+
+    def send_payload(self, payload_value=None):
+        """Send payload to the connected device"""
+        if payload_value is None:
+            return
+        payload = bytearray(str(payload_value), 'utf-8')
+        # print(f"Sending payload: {payload} to handle: {self.characteristic_handle}")
+        try:
+            if self.conn_handle is not None and self.characteristic_handle is not None:
+                self.ble.gatts_write(self.characteristic_handle, payload)  # Write the payload to the characteristic
+                self.ble.gatts_notify(self.conn_handle, self.characteristic_handle, payload)  # type: ignore
+                print(f"Sent Payload!")
+            else:
+                print("Connection handle or characteristic handle is None")
+        except OSError as e:
+            print(f"Error sending payload: {e}")
 
 
+    def on_connect(self, conn_handle, addr_type, addr):
+        """Handle BLE connection"""
+        print(f"Connected to {addr}")
+        self.conn_handle = conn_handle  # Store connection handle
+        print(f"Connection handle: {self.conn_handle}")
+        self.connected = True
+        
+        
+    def on_disconnect(self, conn_handle, reason):
+        """Handle BLE disconnection"""
+        print(f"Disconnected. Reason: {reason} {conn_handle}")
+        self.connected = False
+        self.conn_handle = None  # Clear connection handle
+        self.start_advertising()
 
-READER = MFRC522(spi_id=0, sck=6, miso=4, mosi=7, cs=5, rst=22)
-BLE_DEVICE = None
-CLUTCH_VALUE = 1129975462
+    def ble_irq(self, event, data):
+        """Handle BLE events"""
+        if event == _IRQ_CENTRAL_CONNECT:
+            conn_handle, addr_type, addr = data
+            self.on_connect(conn_handle, addr_type, addr)
+        elif event == _IRQ_CENTRAL_DISCONNECT:
+            print("Disconnected")
+            conn_handle, reason = data
+            self.on_disconnect(conn_handle, reason)
 
+    def run(self):
+        print(f"Advertising started. Look for {self.name} on your phone.")
+        print("LED starts flashing...")
+        try:
+            while True:
+                if self.connected:
+                    value = RFID.readRfid()
+                    self.send_payload(value.getFormatted())
 
-class Data:
-    def __init__(self, id: int, content):
-        self.id = id
-        self.content = content
-        self.clutch_id = 0
+                    self.pin.on()
+                    time.sleep(1)
+                    
+                if not self.connected:
+                    self.pin.toggle()
+                    time.sleep(1)
+        except KeyboardInterrupt:
+            self.pin.off()
+            print("Finished.")
 
-    def __str__(self):
-        return f'{{"id": {self.id}, "content": {self.content}}}'
-
-    def getFormatted(self):
-        status = -1
-        if self.id == constants.SEND_TAG_DATA:
-            status = 1 if self.content == CLUTCH_VALUE else 0
-        return f'({self.clutch_id}, {status})'
-
-
-State = constants.STATE_PLAYING
-PollInterval = 200
-
-
-def onSetState(data: Data):
-    global State
-    State = data.content
-
-
-def onSetPollInterval(data: Data):
-    global PollInterval
-    PollInterval = data.content
-
-
-def readRfid():
-    READER.init()
-    (stat, tag_type) = READER.request(READER.REQIDL)
-    if stat == READER.OK:
-        (stat, uid) = READER.SelectTagSN()
-        if stat == READER.OK:
-            card = int.from_bytes(bytes(uid), "little", False)
-            sendData(Data(constants.SEND_TAG_DATA, card))
-        else:
-            sendData(Data(constants.SEND_ERROR_DATA, {'id': constants.ERROR_READER_NOT_OK, 'code': stat}))
-    else:
-        sendData(Data(constants.SEND_ERROR_DATA, {'id': constants.ERROR_NO_TAG, 'code': stat}))
-
-
-def sendData(data: Data):
-    print(data.getFormatted())
-
-
-def getData() -> list[Data]:
-    return []
-
-
-InputHandlers = {
-    constants.IN_SET_STATE: onSetState,
-    constants.IN_SET_POLL_INTERVAL: onSetPollInterval
-}
-
-def run_device():
-    global BLE_DEVICE
-    BLE_DEVICE = BLE_Device.BLEDevice(name="PicoW_Clutch")
-    BLE_DEVICE.run()
-# 
-# _thread.start_new_thread(run_device, ())
-while True:
-    for data in getData():
-        InputHandlers[data.id](data)
-
-    if State == STATE_PAUSED:
-        continue
-
-    readRfid()
-    machine.lightsleep(PollInterval)
+ble_device = BLEDevice(name="PicoW_Clutch")
+ble_device.run()
