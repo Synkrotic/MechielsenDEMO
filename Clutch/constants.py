@@ -1,0 +1,15 @@
+# send Id's
+SEND_TAG_DATA = 0x00
+SEND_ERROR_DATA = 0x01
+
+# error codes
+ERROR_NO_TAG = 0x00
+ERROR_READER_NOT_OK = 0x01
+
+# input Id's
+IN_SET_STATE = 0x00
+IN_SET_POLL_INTERVAL = 0x01
+
+# states
+STATE_PAUSED = 0x00
+STATE_PLAYING = 0x01
