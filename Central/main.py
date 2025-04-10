@@ -1,153 +1,73 @@
+import asyncio
 import bluetooth
-import random
 import time
-from machine import Pin
-from micropython import const
+import aioble
 
-# BLE Constants
-_IRQ_CENTRAL_CONNECT = const(1)  # Event for when a central device connects
-_IRQ_CENTRAL_DISCONNECT = const(2)  # Event for when a central device disconnects
+MY_SERVICE_UUID = bluetooth.UUID("0000A000-0000-1000-8000-00805F9B34FB")
+MY_CHARACTERISTIC_UUID = bluetooth.UUID("0000A001-0000-1000-8000-00805F9B34FB")
+RECEIVE_SERVICE_UUID = bluetooth.UUID("0000A002-0000-1000-8000-00805F9B34FB")
+RECEIVE_CHARACTERISTIC_UUID = bluetooth.UUID("0000A003-0000-1000-8000-00805F9B34FB")
 
-_FLAG_READ = const(0x02)  # Flag to indicate that the characteristic can be read
-_FLAG_WRITE = const(0x08)  # Flag to indicate that the characteristic can be written
-_FLAG_NOTIFY = const(0x10)  # Flag to indicate that the characteristic can notify
+CLUTCH_PICO_NAME = "PicoW_Clutch"
+CENTRAL_PICO_NAME = "PicoW_Central"
 
-# Use proper 128-bit UUIDs for BLE compatibility
-SERVICE_UUID = bluetooth.UUID("0000A000-0000-1000-8000-00805F9B34FB")  # UUID for the service
-CHARACTERISTIC_UUID = bluetooth.UUID("0000A001-0000-1000-8000-00805F9B34FB")  # UUID for the characteristic
+connection_device = None
+connection_clutch = None
 
-# clutches = [
-#   {
-#     "id": 1,
-#     "value": int(input("clutchval >> ")),
-#   }
-# ]
+# Peripheral Role - Start advertising so another device can connect
+async def start_advertising():
+    # Define service and characteristic
+    service = aioble.Service(MY_SERVICE_UUID)
+    char = aioble.Characteristic(service, MY_CHARACTERISTIC_UUID,
+                                 read=True, write=True, notify=True)
+    
+    # Register the service and characteristic with aioble
+    aioble.register_services(service)
+    
+    print("Advertising...")
+    global connection_clutch
+    # Pass the UUID of the service rather than the service object itself
+    connection_clutch = await aioble.advertise(name=CENTRAL_PICO_NAME, services=[MY_SERVICE_UUID], interval_us=10_000)
+    print("Device connected to me (peripheral):", connection_clutch.device)
+    await connection_clutch.disconnected()
 
-class BLEDevice:
-    def __init__(self, name="PicoW_Bluetooth"):
-        self.name = name
-        self.connected = False
-        self.conn_handle = None
-        self.ble = bluetooth.BLE()  # Initialize the BLE object
-        self.ble.active(True)  # Activate BLE
-        self.ble.irq(self.ble_irq)  # Set the IRQ handler for BLE events
-        self.pin = Pin("LED", Pin.OUT)  # Initialize the pin for the LED
+# Central Role - Scan and connect to another device
+async def connect_to_device():
+    print("Scanning...")
+    while not connection_clutch:
+        async with aioble.scan(duration_ms=10_000) as scanner:
+            async for result in scanner:
+                # Access the device name and address from the result.device
+                device_name = result.name()  # Use 'name()' to get the advertised name
+                device_addr = result.device.addr  # Use 'device.addr' to get the device address
+                if device_name:
+                    print("Found device:", device_name, device_addr)
 
-        # Define GATT service with correct structure
-        self.service = (
-            SERVICE_UUID,
-            ((CHARACTERISTIC_UUID, _FLAG_READ | _FLAG_NOTIFY | _FLAG_WRITE),),
-        )
+                if device_name == CLUTCH_PICO_NAME:
+                    # Correctly initiate the connection using 'result.device.connect()'
+                    global connection
+                    connection = await result.device.connect()
+                    print("Connected to device (central):", connection.device)
+                    await connection.disconnected()
+                    break
 
-        # Register the service
-        ((self.characteristic_handle,),) = self.ble.gatts_register_services((self.service,))
-        
-        self.start_advertising()
-  
-    def start_advertising(self, interval=100):
-        """Start advertising BLE service"""
-        print("Starting advertising...")
-        payload = self.create_advertising_payload()
-        self.ble.gap_advertise(interval, payload)
+async def run():
+    try:
+        await connect_to_device()
+        if connection_device:
+            print("Connected to device (central):", connection_device.device)
+        if connection_clutch:
+            print("Connected to device (peripheral):", connection_clutch.device)
 
-    def create_advertising_payload(self):
-        """Create a proper advertising packet"""
-        payload = bytearray()
-        payload.extend(bytes([len(self.name) + 1, 0x09]))  # Length and type for Complete Local Name
-        payload.extend(self.name.encode('utf-8'))
-        return payload
-
-    def send_payload(self, payload_value=None):
-        """Send payload to the connected device"""
-        if payload_value is None:
-            return
-        payload = bytearray(str(payload_value), 'utf-8')
-        # print(f"Sending payload: {payload} to handle: {self.characteristic_handle}")
-        try:
-            if self.conn_handle is not None and self.characteristic_handle is not None:
-                self.ble.gatts_write(self.characteristic_handle, payload)  # Write the payload to the characteristic
-                self.ble.gatts_notify(self.conn_handle, self.characteristic_handle, payload)  # type: ignore
-                print(f"Sent Payload!")
-            else:
-                print("Connection handle or characteristic handle is None")
-        except OSError as e:
-            print(f"Error sending payload: {e}")
+    except KeyboardInterrupt:
+        print("Stopping...")
 
 
-    def on_connect(self, conn_handle, addr_type, addr):
-        """Handle BLE connection"""
-        print(f"Connected to {addr}")
-        self.conn_handle = conn_handle  # Store connection handle
-        print(f"Connection handle: {self.conn_handle}")
-        self.connected = True
-        
-        
-    def on_disconnect(self, conn_handle, reason):
-        """Handle BLE disconnection"""
-        print(f"Disconnected. Reason: {reason} {conn_handle}")
-        self.connected = False
-        self.conn_handle = None  # Clear connection handle
-        self.start_advertising()
+# Run both roles concurrently
+async def main():
+    await asyncio.gather(
+        start_advertising(),
+        run()
+    )
 
-    def ble_irq(self, event, data):
-        """Handle BLE events"""
-        if event == _IRQ_CENTRAL_CONNECT:
-            conn_handle, addr_type, addr = data
-            self.on_connect(conn_handle, addr_type, addr)
-        elif event == _IRQ_CENTRAL_DISCONNECT:
-            print("Disconnected")
-            conn_handle, reason = data
-            self.on_disconnect(conn_handle, reason)
-
-    def run(self):
-        print("Advertising started. Look for 'PicoW_Bluetooth' on your phone.")
-        print("LED starts flashing...")
-        try:
-            while True:
-                if self.connected:
-                    def randint(a, b):
-                        n = b - a + 1
-                        while True:
-                            r = random.getrandbits(8)
-                            if r < 256 - (256 % n):
-                                return a + (r % n)
-
-                    clutches = [
-                      {
-                        "id": 0,
-                        "value": randint(0, 2),
-                      },
-                      {
-                        "id": 1,
-                        "value": randint(0, 2),
-                      },
-                      {
-                        "id": 2,
-                        "value": randint(0, 2),
-                      },
-                      {
-                        "id": 3,
-                        "value": randint(0, 2),
-                      },
-                      {
-                        "id": 4,
-                        "value": randint(0, 2),
-                      },
-                      {
-                        "id": 5,
-                        "value": randint(0, 2),
-                      }
-                    ]
-                    self.send_payload(clutches)
-                    self.pin.on()
-                    time.sleep(1)
-                    
-                if not self.connected:
-                    self.pin.toggle()
-                    time.sleep(1)
-        except KeyboardInterrupt:
-            self.pin.off()
-            print("Finished.")
-
-ble_device = BLEDevice()
-ble_device.run()
+asyncio.run(main())
