@@ -3,8 +3,10 @@ import socket
 import json
 from RFID import readRfid
 from time import sleep
+from machine import Pin
 
-
+led = Pin('LED', Pin.OUT)
+led.on()
 
 # Set up the Pico W as an Access Point (hotspot)
 ap = network.WLAN(network.AP_IF)
