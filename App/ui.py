@@ -24,6 +24,9 @@ class Clutch():
     elif self.clutch_value == 1:
       self.canvas.itemconfig(self.light, fill="green")
       self.clutch_state = False
+    else:
+      self.canvas.itemconfig(self.light, fill="grey")
+      self.clutch_state = False
 
 
 class Ui():

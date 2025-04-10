@@ -4,10 +4,13 @@ import json
 from RFID import readRfid
 from time import sleep
 
+
+
 # Set up the Pico W as an Access Point (hotspot)
 ap = network.WLAN(network.AP_IF)
 ap.config(essid='PicoW-API', password='00000000')  # You can change the SSID and password
 ap.active(True)
+
 
 print('Starting access point...')
 while not ap.active():
