@@ -3,25 +3,21 @@ from constants import STATE_PAUSED
 from mfrc522 import MFRC522
 
 
-
 READER = MFRC522(spi_id=0, sck=6, miso=4, mosi=7, cs=5, rst=22)
-CLUTCH_VALUE = 1129975462
+READERS =       [READER    , READER   , READER    , READER    , READER, READER]
+CLUTCH_VALUES = [1129975462, 644487072, 3169280180, 1498623501, 0     , 0     ]
 
 
 class Data:
-    def __init__(self, id: int, content):
-        self.id = id
-        self.content = content
-        self.clutch_id = 0
+    def __init__(self, id: int, value: int):
+        self.clutch_id = id
+        self.value = value
 
     def __str__(self):
-        return f'{{"id": {self.id}, "content": {self.content}}}'
+        return f'{{"id": {self.clutch_id}, "value": {self.value}}}'
 
     def getFormatted(self):
-        status = -1
-        if self.id == constants.SEND_TAG_DATA:
-            status = 1 if self.content == CLUTCH_VALUE else 0
-        return f'({self.clutch_id}, {status})'
+        return {'i':self.clutch_id,'v':self.value}
 
 
 State = constants.STATE_PLAYING
@@ -30,40 +26,41 @@ PollInterval = 200
 
 def onSetState(data: Data):
     global State
-    State = data.content
+    State = data.value
 
 
 def onSetPollInterval(data: Data):
     global PollInterval
-    PollInterval = data.content
+    PollInterval = data.value
 
 
-def readRfid() -> Data:
-    READER.init()
-    (stat, tag_type) = READER.request(READER.REQIDL)
-    if stat == READER.OK:
-        (stat, uid) = READER.SelectTagSN()
-        if stat == READER.OK:
+def readRfid(index: int = 0) -> Data:
+    READERS[index].init()
+    (stat, tag_type) = READERS[index].request(READERS[index].REQIDL)
+    if stat == READERS[index].OK:
+        (stat, uid) = READERS[index].SelectTagSN()
+        if stat == READERS[index].OK:
             card = int.from_bytes(bytes(uid), "little", False)
-            return Data(constants.SEND_TAG_DATA, card)
+            print(f"Card {index}: {card}")
+            return Data(index, 1 if card == CLUTCH_VALUES[index] else 0)
         else:
-            return Data(constants.SEND_ERROR_DATA, {'id': constants.ERROR_READER_NOT_OK, 'code': stat})
+            return Data(index, -1)
     else:
-        return Data(constants.SEND_ERROR_DATA, {'id': constants.ERROR_NO_TAG, 'code': stat})
+        return Data(index, -1)
 
 
 def sendData(data: Data):
     print(data.getFormatted())
 
 
-def getData() -> list[Data]:
-    return []
+# def getData() -> list[Data]:
+#     return []
 
 
-InputHandlers = {
-    constants.IN_SET_STATE: onSetState,
-    constants.IN_SET_POLL_INTERVAL: onSetPollInterval
-}
+# InputHandlers = {
+#     constants.IN_SET_STATE: onSetState,
+#     constants.IN_SET_POLL_INTERVAL: onSetPollInterval
+# }
 
 # while True:
 #     try:

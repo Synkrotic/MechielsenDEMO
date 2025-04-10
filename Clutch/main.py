@@ -1,116 +1,61 @@
-import bluetooth
-import time
-import RFID
-from machine import Pin
-from micropython import const
+import network
+import socket
+import json
+from RFID import readRfid
+from time import sleep
 
-# BLE Constants
-_IRQ_CENTRAL_CONNECT = const(1)  # Event for when a central device connects
-_IRQ_CENTRAL_DISCONNECT = const(2)  # Event for when a central device disconnects
+# Set up the Pico W as an Access Point (hotspot)
+ap = network.WLAN(network.AP_IF)
+ap.config(essid='PicoW-API', password='00000000')  # You can change the SSID and password
+ap.active(True)
 
-_FLAG_READ = const(0x02)  # Flag to indicate that the characteristic can be read
-_FLAG_WRITE = const(0x08)  # Flag to indicate that the characteristic can be written
-_FLAG_NOTIFY = const(0x10)  # Flag to indicate that the characteristic can notify
+print('Starting access point...')
+while not ap.active():
+    sleep(1)
+print('Access point active')
+print('AP IP address:', ap.ifconfig()[0])
 
-# Use proper 128-bit UUIDs for BLE compatibility
-SERVICE_UUID = bluetooth.UUID("0000A002-0000-1000-8000-00805F9B34FB")  # UUID for the service
-CHARACTERISTIC_UUID = bluetooth.UUID("0000A003-0000-1000-8000-00805F9B34FB")  # UUID for the characteristic
+# Basic HTTP response headers
+def http_response(client, status_code=200, content_type='application/json', body='{}'):
+    response = f"HTTP/1.1 {status_code} OK\r\nContent-Type: {content_type}\r\n\r\n{body}"
+    client.send(response)
 
-class BLEDevice:
-    def __init__(self, name="PicoW_Bluetooth"):
-        self.name = name
-        self.connected = False
-        self.conn_handle = None
-        self.ble = bluetooth.BLE()  # Initialize the BLE object
-        self.ble.active(True)  # Activate BLE
-        self.ble.irq(self.ble_irq)  # Set the IRQ handler for BLE events
-        self.ble.config(gap_name=self.name)  # Set the device name for advertising
-        self.pin = Pin("LED", Pin.OUT)  # Initialize the pin for the LED
+# Start the web server
+addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
+server = socket.socket()
+server.bind(addr)
+server.listen(1)
 
-        # Define GATT service with correct structure
-        self.service = (
-            SERVICE_UUID,
-            ((CHARACTERISTIC_UUID, _FLAG_READ | _FLAG_NOTIFY | _FLAG_WRITE),),
-        )
+print("Listening for HTTP connections on", addr)
 
-        # Register the service
-        ((self.characteristic_handle,),) = self.ble.gatts_register_services((self.service,))
-        
-        self.start_advertising()
-  
-    def start_advertising(self, interval=100):
-        """Start advertising BLE service"""
-        print("Starting advertising...")
-        payload = self.create_advertising_payload()
-        self.ble.gap_advertise(interval, payload)
+while True:
+    try:
+        client, client_addr = server.accept()
+        print('Client connected from', client_addr)
+        request = client.recv(1024)
+        request_str = request.decode('utf-8')
+        print('Request:', request_str)
 
-    def create_advertising_payload(self):
-        """Create a proper advertising packet"""
-        payload = bytearray()
-        payload.extend(bytes([len(self.name) + 1, 0x09]))  # Length and type for Complete Local Name
-        payload.extend(self.name.encode('utf-8'))
-        return payload
+        # Simple routing
+        if 'GET /api/data' in request_str:
+            data = [
+                readRfid().getFormatted(),
+                readRfid(1).getFormatted(),
+                readRfid(2).getFormatted(),
+                readRfid(3).getFormatted(),
+                readRfid(4).getFormatted(),
+                readRfid(5).getFormatted()
+            ]
+            body = json.dumps(data)
+            http_response(client, body=body)
+        else:
+            http_response(client, status_code=404, body=json.dumps({"error": "Not Found"}))
 
-    def send_payload(self, payload_value=None):
-        """Send payload to the connected device"""
-        if payload_value is None:
-            return
-        payload = bytearray(str(payload_value), 'utf-8')
-        # print(f"Sending payload: {payload} to handle: {self.characteristic_handle}")
-        try:
-            if self.conn_handle is not None and self.characteristic_handle is not None:
-                self.ble.gatts_write(self.characteristic_handle, payload)  # Write the payload to the characteristic
-                self.ble.gatts_notify(self.conn_handle, self.characteristic_handle, payload)  # type: ignore
-                print(f"Sent Payload!")
-            else:
-                print("Connection handle or characteristic handle is None")
-        except OSError as e:
-            print(f"Error sending payload: {e}")
-
-
-    def on_connect(self, conn_handle, addr_type, addr):
-        """Handle BLE connection"""
-        print(f"Connected to {addr}")
-        self.conn_handle = conn_handle  # Store connection handle
-        print(f"Connection handle: {self.conn_handle}")
-        self.connected = True
-        
-        
-    def on_disconnect(self, conn_handle, reason):
-        """Handle BLE disconnection"""
-        print(f"Disconnected. Reason: {reason} {conn_handle}")
-        self.connected = False
-        self.conn_handle = None  # Clear connection handle
-        self.start_advertising()
-
-    def ble_irq(self, event, data):
-        """Handle BLE events"""
-        if event == _IRQ_CENTRAL_CONNECT:
-            conn_handle, addr_type, addr = data
-            self.on_connect(conn_handle, addr_type, addr)
-        elif event == _IRQ_CENTRAL_DISCONNECT:
-            print("Disconnected")
-            conn_handle, reason = data
-            self.on_disconnect(conn_handle, reason)
-
-    def run(self):
-        print(f"Advertising started. Look for {self.name} on your phone.")
-        print("LED starts flashing...")
-        try:
-            while True:
-                if self.connected:
-                    value = RFID.readRfid()
-                    self.send_payload(value.getFormatted())
-
-                    self.pin.on()
-                    time.sleep(1)
-                    
-                if not self.connected:
-                    self.pin.toggle()
-                    time.sleep(1)
-        except KeyboardInterrupt:
-            self.pin.off()
-            print("Finished.")
-
-ble_device = BLEDevice(name="PicoW_Clutch")
-ble_device.run()
+        client.close()
+    except KeyboardInterrupt:
+        server.close()
+        ap.active(False)
+        print("Access point stopped")
+        break
+    except Exception as e:
+        print("Error:", e)
